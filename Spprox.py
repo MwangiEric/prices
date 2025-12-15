@@ -1,154 +1,84 @@
-# gsm_pa_proxy.py
+# bridge_dash.py
 import streamlit as st
 import requests
-import random
-import time
-import json
-from bs4 import BeautifulSoup
+import feedparser
+import pandas as pd
+from datetime import datetime
 
 # --------------------------------------------------
-#  FRESH PROXY LOADER  (auto-fetched, 5-min cache)
+#  CONFIG – your own bridge
 # --------------------------------------------------
-@st.cache_data(ttl=300)
-def load_fresh_proxies():
-    urls = [
-        "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http,socks5&timeout=10000&country=all",
-        "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
-    ]
-    proxies = []
-    for url in urls:
-        try:
-            text = requests.get(url, timeout=10).text
-            for line in text.splitlines():
-                line = line.strip()
-                if ":" in line and len(line.split(":")) == 2:
-                    proxies.append(f"https://{line}")
-        except Exception as e:
-            st.write("Proxy source failed:", e)
-    return list(set(proxies))
+BRIDGE = "https://rss-57uz.onrender.com"
 
 # --------------------------------------------------
-#  PROXY TOGGLE  (default OFF)
+#  PROXY TOGGLE  (re-uses your old helper)
 # --------------------------------------------------
-use_proxy = st.sidebar.checkbox("Use proxy (rotate every request)", value=False)
-PROXY_POOL = load_fresh_proxies()
+use_proxy = st.sidebar.checkbox("Use proxy", value=False)
+PROXY_POOL = []   # fill or leave empty
 
 def get_proxy():
     if not use_proxy or not PROXY_POOL:
         return {}
-    px = random.choice(PROXY_POOL)
-    return {"https": px, "http": px}
+    return {"https": random.choice(PROXY_POOL), "http": random.choice(PROXY_POOL)}
 
 # --------------------------------------------------
-#  REQUEST SESSION
+#  FEED FETCHER
 # --------------------------------------------------
-session = requests.Session()
-UA_POOL = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0",
-]
-
-def random_headers():
-    session.headers.update({"User-Agent": random.choice(UA_POOL),
-                            "Accept-Language": "en-US,en;q=0.9"})
-
-def get_soup(url):
-    for attempt in range(3):
-        try:
-            random_headers()
-            r = session.get(url, proxies=get_proxy(), timeout=12)
-            if r.status_code == 429:
-                st.warning("429 – cooling 30 s")
-                time.sleep(30); continue
-            r.raise_for_status()
-            return BeautifulSoup(r.text, "html.parser")
-        except Exception as e:
-            st.error(f"Request error: {e}")
-            time.sleep(random.uniform(2, 4))
-    return None
-
-# --------------------------------------------------
-#  GSMARENA PARSER
-# --------------------------------------------------
-GSM = "https://www.gsmarena.com/"
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def gsm_search_suggestions(query: str):
-    soup = get_soup(f"{GSM}res.php3?sSearch={query}")
-    if not soup:
-        return []
-    return [(a.get_text(strip=True), a["href"]) for a in soup.select(".makers a")]
-
-def gsm_specs(rel_url: str):
-    soup = get_soup(GSM + rel_url)
-    if not soup:
-        return {}
-    specs = {}
-    for tr in soup.select("table.specs tr"):
-        tds = tr.find_all("td")
-        if len(tds) == 2:
-            key, val = [td.get_text(" ", strip=True) for td in tds]
-            specs[key] = val
-    return specs
-
-# --------------------------------------------------
-#  PHONEARENA PARSER
-# --------------------------------------------------
-PA = "https://www.phonearena.com/"
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def pa_search_suggestions(query: str):
-    url = f"{PA}search?k={query}"
-    soup = get_soup(url)
-    if not soup:
-        return []
-    return [(a.get_text(strip=True), a["href"]) for a in soup.select('.search-item-result a[href*="/phones/"]')]
-
-def pa_specs(rel_url: str):
-    soup = get_soup(PA + rel_url)
-    if not soup:
-        return {}
-    specs = {}
-    for row in soup.select(".phone-specs-table tr"):
-        tds = row.find_all("td")
-        if len(tds) == 2:
-            key, val = [td.get_text(" ", strip=True) for td in tds]
-            specs[key] = val
-    return specs
+def fetch_feed(endpoint: str):
+    url = BRIDGE + endpoint
+    r = requests.get(url, proxies=get_proxy(), timeout=15)
+    r.raise_for_status()
+    return feedparser.parse(r.text)
 
 # --------------------------------------------------
 #  STREAMLIT UI
 # --------------------------------------------------
-st.set_page_config(page_title="Phone Scraper", layout="centered")
-st.title("📱 Phone Scraper (GSMArena + PhoneArena)")
-site = st.sidebar.radio("Choose site:", ("GSMArena", "PhoneArena"))
+st.set_page_config(page_title="Bridge Dashboard", layout="wide")
+st.title("📡 RSS-Bridge Dashboard – phones, news, prices")
 
-query = st.text_input("Search phone:", placeholder="iPhone 16 Pro").strip()
-if query:
-    with st.spinner(f"Fetching {site} suggestions…"):
-        hits = gsm_search_suggestions(query) if site == "GSMArena" else pa_search_suggestions(query)
-    if not hits:
-        st.error("No results found.")
-        st.stop()
+# ---------- 1.  PHONE / GADGET SPECS  ----------
+with st.expander("📱 Latest phone specs (GSMArena)", expanded=True):
+    d = fetch_feed("/?action=display&bridge=GSMarenaBridge&action=phones&format=Json")
+    if d.entries:
+        df = pd.DataFrame([{"Date": datetime.strptime(e.published, "%Y-%m-%d %H:%M:%S"),
+                            "Phone": e.title,
+                            "Link": e.link} for e in d.entries])
+        st.dataframe(df, use_container_width=True)
+        for e in d.entries[:5]:
+            st.markdown(f"- [{e.title}]({e.link})")
+    else:
+        st.info("No entries – bridge may be empty.")
 
-    chosen_name, chosen_url = st.selectbox(
-        "Pick the exact model:",
-        options=hits,
-        format_func=lambda x: x[0]
-    )
+# ---------- 2.  TECH NEWS  ----------
+cols = st.columns(2)
+with cols[0]:
+    with st.expander("🌐 Engadget", expanded=True):
+        d = fetch_feed("/?action=display&bridge=EngadgetBridge&format=Json")
+        for e in d.entries[:5]:
+            st.markdown(f"- [{e.title}]({e.link})  – {e.published[:-9]}")
+with cols[1]:
+    with st.expander("🔬 Ars Technica", expanded=True):
+        d = fetch_feed("/?action=display&bridge=ArsTechnicaBridge&format=Json")
+        for e in d.entries[:5]:
+            st.markdown(f"- [{e.title}]({e.link})  – {e.published[:-9]}")
 
-    if st.button("Load full specs"):
-        with st.spinner(f"Pulling specs from {site}…"):
-            specs = gsm_specs(chosen_url) if site == "GSMArena" else pa_specs(chosen_url)
-        if specs:
-            st.success(f"Specs for **{chosen_name}**")
-            st.table(specs)
-            st.download_button(
-                label="Download JSON",
-                data=json.dumps(specs, indent=2, ensure_ascii=False),
-                file_name=f"{chosen_name.replace(' ', '_')}.json",
-                mime="application/json"
-            )
-        else:
-            st.error("Could not retrieve specs.")
+# ---------- 3.  PRICE WATCHING  ----------
+st.subheader("💰 Price feeds")
+keyword = st.text_input("Amazon search keyword:", value="Samsung Galaxy S25 FE")
+if keyword:
+    d = fetch_feed(f"/?action=display&bridge=AmazonBridge&q={keyword.replace(' ', '+')}&format=Json")
+    if d.entries:
+        for e in d.entries[:10]:
+            st.markdown(f"- [{e.title}]({e.link})  – {e.get('amazon_price', 'N/A')}")
+    else:
+        st.info("No Amazon results – try another keyword.")
+
+# ---------- 4.  Idealo (EU price comparison) ----------
+gtin = st.text_input("Idealo GTIN / EAN (13 digits):", placeholder="8806095212349")
+if gtin and len(gtin) == 13:
+    d = fetch_feed(f"/?action=display&bridge=IdealoBridge&gtin={gtin}&format=Json")
+    if d.entries:
+        for e in d.entries:
+            st.markdown(f"- [{e.title}]({e.link})  – **{e.get('idealo_price', '?')} €**")
+    else:
+        st.info("No Idealo offers – GTIN may be unknown.")
