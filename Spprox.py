@@ -1,84 +1,48 @@
-# bridge_dash.py
-import streamlit as st
 import requests
-import feedparser
-import pandas as pd
-from datetime import datetime
+import streamlit as st
 
-# --------------------------------------------------
-#  CONFIG – your own bridge
-# --------------------------------------------------
-BRIDGE = "https://rss-57uz.onrender.com"
+# Your proxy list URL (embeds auth token)
+PROXY_LIST_URL = "https://proxy.webshare.io/api/v2/proxy/list/download/rsxcmuxgyewbbbbxbhuqsrwmwukqnnwuiprxodoh/-/any/username/direct/-/?plan_id=12426511"
 
-# --------------------------------------------------
-#  PROXY TOGGLE  (re-uses your old helper)
-# --------------------------------------------------
-use_proxy = st.sidebar.checkbox("Use proxy", value=False)
-PROXY_POOL = []   # fill or leave empty
+st.title("Webshare Proxy List Test")
 
-def get_proxy():
-    if not use_proxy or not PROXY_POOL:
-        return {}
-    return {"https": random.choice(PROXY_POOL), "http": random.choice(PROXY_POOL)}
-
-# --------------------------------------------------
-#  FEED FETCHER
-# --------------------------------------------------
-def fetch_feed(endpoint: str):
-    url = BRIDGE + endpoint
-    r = requests.get(url, proxies=get_proxy(), timeout=15)
-    r.raise_for_status()
-    return feedparser.parse(r.text)
-
-# --------------------------------------------------
-#  STREAMLIT UI
-# --------------------------------------------------
-st.set_page_config(page_title="Bridge Dashboard", layout="wide")
-st.title("📡 RSS-Bridge Dashboard – phones, news, prices")
-
-# ---------- 1.  PHONE / GADGET SPECS  ----------
-with st.expander("📱 Latest phone specs (GSMArena)", expanded=True):
-    d = fetch_feed("/?action=display&bridge=GSMarenaBridge&action=phones&format=Json")
-    if d.entries:
-        df = pd.DataFrame([{"Date": datetime.strptime(e.published, "%Y-%m-%d %H:%M:%S"),
-                            "Phone": e.title,
-                            "Link": e.link} for e in d.entries])
-        st.dataframe(df, use_container_width=True)
-        for e in d.entries[:5]:
-            st.markdown(f"- [{e.title}]({e.link})")
+try:
+    # Fetch the proxy list
+    response = requests.get(PROXY_LIST_URL, timeout=15)
+    response.raise_for_status()
+    
+    proxy_lines = response.text.strip().split("\n")
+    
+    if not proxy_lines or proxy_lines[0] == "":
+        st.error("❌ Proxy list is empty.")
     else:
-        st.info("No entries – bridge may be empty.")
+        st.success(f"✅ Retrieved {len(proxy_lines)} proxy entries.")
+        
+        first_proxy = proxy_lines[0]
+        st.write("Sample proxy format (first entry):")
+        st.code(first_proxy, language="text")
+        
+        # Optional: Validate format
+        if "@" in first_proxy and ":" in first_proxy.split("@")[0]:
+            st.write("✅ Format looks correct: `user:pass@host:port`")
+        else:
+            st.warning("⚠️ Unexpected format. Check Webshare settings.")
+            
+        # Optional: Test using the proxy
+        if st.button("Test First Proxy Connectivity"):
+            try:
+                proxy_url = f"http://{first_proxy}"
+                test_resp = requests.get(
+                    "https://httpbin.org/ip",
+                    proxies={"http": proxy_url, "https": proxy_url},
+                    timeout=10
+                )
+                st.write("✅ Proxy is working. Response IP:")
+                st.json(test_resp.json())
+            except Exception as e:
+                st.error(f"❌ Proxy test failed: {e}")
 
-# ---------- 2.  TECH NEWS  ----------
-cols = st.columns(2)
-with cols[0]:
-    with st.expander("🌐 Engadget", expanded=True):
-        d = fetch_feed("/?action=display&bridge=EngadgetBridge&format=Json")
-        for e in d.entries[:5]:
-            st.markdown(f"- [{e.title}]({e.link})  – {e.published[:-9]}")
-with cols[1]:
-    with st.expander("🔬 Ars Technica", expanded=True):
-        d = fetch_feed("/?action=display&bridge=ArsTechnicaBridge&format=Json")
-        for e in d.entries[:5]:
-            st.markdown(f"- [{e.title}]({e.link})  – {e.published[:-9]}")
-
-# ---------- 3.  PRICE WATCHING  ----------
-st.subheader("💰 Price feeds")
-keyword = st.text_input("Amazon search keyword:", value="Samsung Galaxy S25 FE")
-if keyword:
-    d = fetch_feed(f"/?action=display&bridge=AmazonBridge&q={keyword.replace(' ', '+')}&format=Json")
-    if d.entries:
-        for e in d.entries[:10]:
-            st.markdown(f"- [{e.title}]({e.link})  – {e.get('amazon_price', 'N/A')}")
-    else:
-        st.info("No Amazon results – try another keyword.")
-
-# ---------- 4.  Idealo (EU price comparison) ----------
-gtin = st.text_input("Idealo GTIN / EAN (13 digits):", placeholder="8806095212349")
-if gtin and len(gtin) == 13:
-    d = fetch_feed(f"/?action=display&bridge=IdealoBridge&gtin={gtin}&format=Json")
-    if d.entries:
-        for e in d.entries:
-            st.markdown(f"- [{e.title}]({e.link})  – **{e.get('idealo_price', '?')} €**")
-    else:
-        st.info("No Idealo offers – GTIN may be unknown.")
+except requests.exceptions.RequestException as e:
+    st.error(f"❌ Failed to fetch proxy list: {e}")
+except Exception as e:
+    st.error(f"Unexpected error: {e}")
